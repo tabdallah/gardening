@@ -7,6 +7,7 @@ import requests
 import json
 import datetime
 import uptime
+import csv
 from kasa import SmartPlug
 
 # Task timing
@@ -44,6 +45,9 @@ LED_TOP_2 = 16
 base_dir = '/sys/bus/w1/devices/'
 device_folder = glob.glob(base_dir + '28*')[0]
 device_file = device_folder + '/w1_slave'
+
+# Log file
+log_file = 'greenhouse_log.csv' 
 
 # Tasks
 def read_temp_raw():
@@ -87,6 +91,14 @@ async def init_task():
 		heater_plug = SmartPlug(GreenhouseHeater)
 		await heater_plug.turn_on()
 
+	# Write header to CSV
+	if not os.path.exists(log_file):
+		log_data = ['timestamp', 'inside_temp_degC', 'outside_temp_degC', 'outside_humidity_pct']
+		with open(log_file, 'a') as f_object:
+			writer_object = csv.writer(f_object)
+			writer_object.writerow(log_data)
+			f_object.close()
+
 async def furnace_task():
 	print('Running furnace task')
 	heater_plug = SmartPlug(GreenhouseHeater)
@@ -102,13 +114,24 @@ async def furnace_task():
 
 def weather_task():
 	print('Running weather task')
-	#response = requests.get(url)
+	response = requests.get(weather_query)
+	if response.status_code == 200:
+		data = response.json()
+		data_main = data['main']
+		outside_temp_degC = data_main['temp']
+		outside_humidity_pct = data_main['humidity']
+		print(f"Temperature: {outside_temp_degC}")
+		print(f"Humidity: {outside_humidity_pct}")
+	else:
+		print('Error in weather HTTP request') 
+	return outside_temp_degC, outside_humidity_pct
 
 def temperature_task():
 	print('Running temperature task')
-	temperature = read_temp()
-	print('Temperature: ' + str(temperature) + ' degC')
-	#os.system('echo Temperature: ' + str(temperature) + ' degC | wall')	
+	temperature_degC = read_temp()
+	print('Temperature: ' + str(temperature_degC) + ' degC')
+	#os.system('echo Temperature: ' + str(temperature_degC) + ' degC | wall')	
+	return temperature_degC
 
 def light_task():
 	print('Running light task')
@@ -123,11 +146,16 @@ def light_task():
 		GPIO.output(LED_TOP_1, GPIO.HIGH)
 		GPIO.output(LED_TOP_2, GPIO.HIGH)
 
-def log_task():
+def log_task(inside_temp_degC, weather_data):
 	print('Running log task')
 	utc_dt = datetime.datetime.now()
 	print("Local time {}".format(utc_dt.astimezone().isoformat()))
-
+	
+	log_data = [utc_dt.astimezone().isoformat(), inside_temp_degC, weather_data[0], weather_data[1]] 
+	with open(log_file, 'a') as f_object:
+		writer_object = csv.writer(f_object)
+		writer_object.writerow(log_data)
+		f_object.close()
 
 # Main function
 async def main():
@@ -144,16 +172,16 @@ async def main():
 			await furnace_task()
 
 		if GlobalTimer_Sec % WeatherTimeStep_Sec == 0:
-			weather_task()
+			weather_data = weather_task()
 
 		if GlobalTimer_Sec % TemperatureTimeStep_Sec == 0:
-			temperature_task()
+			inside_temp_degC = temperature_task()
 
 		if GlobalTimer_Sec % LightTimeStep_Sec == 0:
 			light_task()
 
 		if GlobalTimer_Sec % LogTimeStep_Sec == 0:
-			log_task()
+			log_task(inside_temp_degC, weather_data)
 
 		await asyncio.sleep(GlobalTimeStep_Sec)	
 		GlobalTimer_Sec += 1
