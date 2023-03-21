@@ -7,8 +7,8 @@ import requests
 import json
 import datetime
 import uptime
-import csv
 from kasa import SmartPlug
+import mysql.connector
 
 # Task timing
 GlobalTimeStep_Sec = 1
@@ -16,7 +16,7 @@ FurnaceTimeStep_Sec = 60
 WeatherTimeStep_Sec = 3600
 LightTimeStep_Sec = 1800
 TemperatureTimeStep_Sec = 60
-LogTimeStep_Sec = 60
+LogTimeStep_Sec = 60 * 30
 
 # Kasa smart plug devices
 LivingRoomLamp = "192.168.2.107"
@@ -32,12 +32,12 @@ HeaterOffTemp = 21
 # Weather query
 base_url = "https://api.openweathermap.org/data/2.5/weather?"
 city = "london,ca"
-api_key = "c96d2072fe0338fe2dc734f9d90793c4"
+api_key_file = '/home/pi/Desktop/gardening/weather_api_key.txt'
 units = "metric"
-weather_query = base_url + "q=" + city + "&units=" + units + "&appid=" + api_key
+weather_query = '' 
 
 # Light control 
-EnableLights = 0
+EnableLights = 1 
 LED_TOP_1 = 12
 LED_TOP_2 = 16
 
@@ -46,8 +46,11 @@ base_dir = '/sys/bus/w1/devices/'
 device_folder = glob.glob(base_dir + '28*')[0]
 device_file = device_folder + '/w1_slave'
 
-# Log file
-log_file = 'greenhouse_log.csv' 
+# Log database
+db_name = 'greenhouse'
+db_user = 'pi'
+db_password_file = '/home/pi/Desktop/gardening/db_password.txt'
+db_password = ''
 
 # Tasks
 def read_temp_raw():
@@ -91,13 +94,18 @@ async def init_task():
 		heater_plug = SmartPlug(GreenhouseHeater)
 		await heater_plug.turn_on()
 
-	# Write header to CSV
-	if not os.path.exists(log_file):
-		log_data = ['timestamp', 'inside_temp_degC', 'outside_temp_degC', 'outside_humidity_pct']
-		with open(log_file, 'a') as f_object:
-			writer_object = csv.writer(f_object)
-			writer_object.writerow(log_data)
-			f_object.close()
+	# Get weather api key and build query
+	f_handle = open(api_key_file, 'r')
+	api_key = f_handle.read() 
+	f_handle.close()
+	global weather_query
+	weather_query = base_url + "q=" + city + "&units=" + units + "&appid=" + api_key.strip()
+
+	# Get database password 
+	global db_password
+	f_handle = open(db_password_file, 'r')
+	db_password = f_handle.read() 
+	f_handle.close()
 
 async def furnace_task():
 	print('Running furnace task')
@@ -124,6 +132,8 @@ def weather_task():
 		print(f"Humidity: {outside_humidity_pct}")
 	else:
 		print('Error in weather HTTP request') 
+		print(weather_query)
+		return 69, 420
 	return outside_temp_degC, outside_humidity_pct
 
 def temperature_task():
@@ -151,11 +161,20 @@ def log_task(inside_temp_degC, weather_data):
 	utc_dt = datetime.datetime.now()
 	print("Local time {}".format(utc_dt.astimezone().isoformat()))
 	
-	log_data = [utc_dt.astimezone().isoformat(), inside_temp_degC, weather_data[0], weather_data[1]] 
-	with open(log_file, 'a') as f_object:
-		writer_object = csv.writer(f_object)
-		writer_object.writerow(log_data)
-		f_object.close()
+	try:
+		db_connection = mysql.connector.connect(host='localhost',user='pi',password='eatmyasshackers',database='greenhouse')
+		if db_connection.is_connected():
+			db_cursor = db_connection.cursor()
+			db_cursor.execute('INSERT INTO temperatures(timestamp, greenhouse_temp_degC, greenhouse_humidity_pct, outside_temp_degC, outside_humidity_pct) VALUES (%s, %s, %s, %s, %s)', (utc_dt, inside_temp_degC, 69, weather_data[0], weather_data[1]))	
+			db_connection.commit()
+			db_cursor.close()
+			db_connection.close()		
+			print('Wrote to temperatures table')
+		else:
+			print('Could not connect to database')
+			return
+	except:
+		print('Error calling db connect')
 
 # Main function
 async def main():
